@@ -154,6 +154,12 @@
     const out = [];
 
     for (const prop of computed) {
+      // Chrome enumerates custom properties here too. A design-token library
+      // can define hundreds of them per element, and they are all redundant:
+      // every standard property below already has its var() resolved into a
+      // computed value.
+      if (prop.startsWith('--')) continue;
+
       const isSize = prop === 'width' || prop === 'height';
       if (SKIP_EXACT.has(prop) && !(allowSize && isSize)) continue;
       if (SKIP_MATCH.test(prop)) continue;
@@ -212,7 +218,11 @@
         // and inline styles would only be dead weight — or worse, collide with
         // the user's own stylesheet.
         copy.removeAttribute('style');
-        copy.className = className;
+        // setAttribute, not .className: on an SVG element className is a
+        // read-only SVGAnimatedString, so assigning to it silently does
+        // nothing and the node ends up with no class at all.
+        copy.removeAttribute('class');
+        copy.setAttribute('class', className);
 
         for (const { name } of [...copy.attributes]) {
           if (DROP_ATTR.test(name)) copy.removeAttribute(name);

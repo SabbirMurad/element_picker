@@ -266,8 +266,6 @@
       min-height: 0;
       overflow: auto;
       background: ${PANE_BG};
-      scrollbar-width: thin;
-      scrollbar-color: #4A4A4A transparent;
     }
     .pane-body::-webkit-scrollbar { width: 6px; height: 6px; }
     .pane-body::-webkit-scrollbar-track { background: transparent; }
@@ -499,7 +497,13 @@
       frame.setAttribute('title', 'Isolated preview');
       frame.srcdoc =
         '<!doctype html><html><head><meta charset="utf-8">' +
-        '<style>html,body{margin:0;padding:16px;background:' + PANE_BG + ';}</style>' +
+        '<style>html,body{margin:0;padding:16px;background:' + PANE_BG + ';}' +
+        // The frame scrolls its own document, so the pane's thin-scrollbar
+        // rule cannot reach it.
+        '::-webkit-scrollbar{width:6px;height:6px;}' +
+        '::-webkit-scrollbar-track{background:transparent;}' +
+        '::-webkit-scrollbar-thumb{background:#4A4A4A;border-radius:3px;}' +
+        '::-webkit-scrollbar-corner{background:transparent;}</style>' +
         '<style id="ep-style"></style></head><body></body></html>';
       frame.addEventListener('load', () => this._applyPreview());
 
