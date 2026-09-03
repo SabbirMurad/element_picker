@@ -10,7 +10,18 @@
   if (ns.highlight) return;
 
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const span = (cls, text) => (text ? `<span class="t-${cls}">${esc(text)}</span>` : '');
+  const NL = String.fromCharCode(10);
+
+  // Never let a span straddle a newline: the panel splits this output on
+  // newlines to lay each logical line out as its own row, which is only safe
+  // while every newline sits outside the markup.
+  const span = (cls, text) => {
+    if (!text) return '';
+    return text
+      .split(NL)
+      .map((part) => (part ? `<span class="t-${cls}">${esc(part)}</span>` : ''))
+      .join(NL);
+  };
 
   // --- CSS -----------------------------------------------------------------
 

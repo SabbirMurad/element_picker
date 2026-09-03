@@ -185,54 +185,50 @@
     .copy-btn svg { display: block; width: 13px; height: 13px; }
 
     .pane-body.is-empty { display: grid; place-items: center; padding: 20px; }
+    /* One grid row per logical line: the number shares a row with its code, so
+       a line that wraps grows the row and the number stays pinned to its top
+       instead of a second number appearing for the continuation. */
+    /* One contenteditable layer rather than a textarea over a styled copy: a
+       wrapped line has to continue at its own indent, which is per-line
+       layout, and a textarea cannot express that. */
     .code {
-      display: flex;
-      align-items: stretch;
-      min-width: 100%;
-      width: max-content;
+      --gutter-w: 46px;
+      --pad-x: 16px;
+      --pad-y: 12px;
+      position: relative;
+      width: 100%;
       font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
-    /* Sticky so the numbers stay put when the code scrolls sideways. */
-    .gutter {
-      position: sticky;
-      left: 0;
-      z-index: 1;
-      flex: none;
-      padding: 12px 10px 12px 12px;
-      background: ${PANE_BG};
-      color: #858585;
-      text-align: right;
-      white-space: pre;
-      user-select: none;
-    }
-    .editor { position: relative; flex: 1 0 auto; }
-    .highlight,
-    .editor textarea {
+    .editor {
       margin: 0;
-      padding: 12px 16px 12px 4px;
-      font: inherit;
-      white-space: pre;
-      tab-size: 2;
-      border: 0;
-    }
-    .highlight {
+      padding: var(--pad-y) var(--pad-x) var(--pad-y) var(--gutter-w);
       color: #D4D4D4;
-      pointer-events: none;
-    }
-    .editor textarea {
-      position: absolute;
-      inset: 0;
-      display: block;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
       outline: none;
-      resize: none;
-      background: transparent;
-      color: transparent;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: normal;
+      tab-size: 2;
       caret-color: #D4D4D4;
     }
-    .editor textarea::selection { background: #264F78; }
+    /* Each row carries padding-left plus an equal negative text-indent, so its
+       first line starts flush and every wrapped line resumes at the line's own
+       indentation. */
+    /* Opaque is fine now: the text is real rather than a transparent overlay,
+       so it paints on top of the selection and keeps its syntax colours. */
+    .editor ::selection { background: #264F78; }
+    .row { position: relative; }
+    .row::before {
+      content: attr(data-n);
+      position: absolute;
+      left: calc(-1 * var(--gutter-w));
+      width: calc(var(--gutter-w) - 12px);
+      color: #858585;
+      text-align: right;
+      /* text-indent inherits, and would otherwise drag the number along. */
+      text-indent: 0;
+      pointer-events: none;
+      user-select: none;
+    }
 
     /* VS Code Dark+ token colours. */
     .t-tag   { color: #569CD6; }
@@ -430,54 +426,191 @@
       }
 
       const NL = String.fromCharCode(10);
+      const root = this.root;
       const wrap = document.createElement('div');
       wrap.className = 'code';
 
-      const gutter = document.createElement('div');
-      gutter.className = 'gutter';
-      gutter.setAttribute('aria-hidden', 'true');
-
       const editor = document.createElement('div');
       editor.className = 'editor';
+      // plaintext-only keeps the browser from inserting markup of its own and
+      // makes paste arrive as plain text, which is all this should ever hold.
+      editor.setAttribute('contenteditable', 'plaintext-only');
+      editor.setAttribute('spellcheck', 'false');
+      editor.setAttribute('aria-label', id.toUpperCase() + ' source');
 
-      const highlighted = document.createElement('pre');
-      highlighted.className = 'highlight';
-      highlighted.setAttribute('aria-hidden', 'true');
-
-      const input = document.createElement('textarea');
-      input.spellcheck = false;
-      input.setAttribute('wrap', 'off');
-      input.setAttribute('aria-label', id.toUpperCase() + ' source');
-      input.value = text;
-
-      // The highlighted layer also sizes the editor, so it has to be repainted
-      // on every keystroke or the textarea stops covering the text.
-      const paint = () => {
-        const value = input.value;
-        // Every token is escaped by the highlighter, so this is safe.
-        highlighted.innerHTML = ns.highlight[id](value);
-        gutter.textContent = value.split(NL).map((_, i) => i + 1).join(NL);
+      // --- reading the document -------------------------------------------
+      // Rows are re-rendered on every edit, but between a keystroke and that
+      // re-render the browser may have split or merged them, so read
+      // defensively. textContent, never innerText: innerText includes
+      // ::before content, which here is the line numbers.
+      const readValue = () => {
+        const lines = [];
+        for (const node of editor.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            if (lines.length) lines[lines.length - 1] += node.textContent;
+            else lines.push(node.textContent);
+          } else if (node.nodeName === 'BR') {
+            lines.push('');
+          } else {
+            lines.push(node.textContent);
+          }
+        }
+        return lines.join(NL);
       };
-      paint();
 
-      input.addEventListener('input', () => {
-        this.result = { ...this.result, [id]: input.value };
-        paint();
+      // --- caret, as an offset into that value ------------------------------
+      const caretOffset = () => {
+        const selection = root.getSelection ? root.getSelection() : null;
+        if (!selection || !selection.rangeCount) return null;
+
+        const range = selection.getRangeAt(0);
+        const rows = [...editor.childNodes];
+        const lengthBefore = (n) =>
+          rows.slice(0, n).reduce((sum, row) => sum + row.textContent.length + 1, 0);
+
+        // Caret sitting directly between rows rather than inside one.
+        if (range.startContainer === editor) return lengthBefore(range.startOffset);
+
+        let row = range.startContainer;
+        while (row && row.parentNode !== editor) row = row.parentNode;
+        const index = rows.indexOf(row);
+        if (index < 0) return null;
+
+        const upTo = document.createRange();
+        upTo.selectNodeContents(row);
+        upTo.setEnd(range.startContainer, range.startOffset);
+        return lengthBefore(index) + upTo.toString().length;
+      };
+
+      const setCaret = (offset) => {
+        const selection = root.getSelection ? root.getSelection() : null;
+        if (selection === null || offset === null) return;
+
+        let remaining = offset;
+        for (const row of editor.childNodes) {
+          const length = row.textContent.length;
+          if (remaining > length) {
+            remaining -= length + 1;
+            continue;
+          }
+          const range = document.createRange();
+          const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+          let seen = 0;
+          let node = walker.nextNode();
+          while (node && seen + node.length < remaining) {
+            seen += node.length;
+            node = walker.nextNode();
+          }
+          if (node) range.setStart(node, remaining - seen);
+          else range.setStart(row, 0);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return;
+        }
+      };
+
+      // --- rendering --------------------------------------------------------
+      const leadingSpaces = (line) => (/^[ 	]*/.exec(line) || [''])[0].length;
+
+      const render = (value) => {
+        const rows = document.createDocumentFragment();
+        value.split(NL).forEach((line, i) => {
+          const row = document.createElement('div');
+          row.className = 'row';
+          row.dataset.n = String(i + 1);
+
+          const indent = leadingSpaces(line);
+          if (indent) {
+            row.style.paddingLeft = indent + 'ch';
+            row.style.textIndent = '-' + indent + 'ch';
+          }
+
+          // Every token is escaped by the highlighter, so this is safe. An
+          // empty line needs the <br> or the row collapses and the caret has
+          // nowhere to sit.
+          const markup = ns.highlight[id](line);
+          row.innerHTML = markup || '<br>';
+          rows.append(row);
+        });
+        editor.replaceChildren(rows);
+      };
+
+      // --- history ----------------------------------------------------------
+      // Re-rendering the DOM on every edit destroys the browser's own undo, so
+      // it is replaced rather than left broken.
+      const undo = [{ value: text, caret: 0 }];
+      const redo = [];
+      // Without coalescing, every keystroke is its own undo step and Ctrl+Z
+      // walks back one character at a time.
+      const COALESCE_MS = 500;
+      let lastEdit = 0;
+
+      const apply = (entry) => {
+        render(entry.value);
+        setCaret(entry.caret);
+        this.result = { ...this.result, [id]: entry.value };
+        this._schedulePreview();
+      };
+
+      render(text);
+
+      editor.addEventListener('input', () => {
+        const value = readValue();
+        const caret = caretOffset();
+
+        const now = Date.now();
+        if (now - lastEdit < COALESCE_MS && undo.length > 1) {
+          undo[undo.length - 1] = { value, caret };
+        } else {
+          undo.push({ value, caret });
+          if (undo.length > 200) undo.shift();
+        }
+        lastEdit = now;
+        redo.length = 0;
+
+        render(value);
+        setCaret(caret);
+        this.result = { ...this.result, [id]: value };
         this._schedulePreview();
       });
 
-      // Tab belongs to the code here, not to focus traversal.
-      input.addEventListener('keydown', (event) => {
-        if (event.key !== 'Tab') return;
-        event.preventDefault();
-        const { selectionStart: from, selectionEnd: to, value } = input;
-        input.value = value.slice(0, from) + '  ' + value.slice(to);
-        input.selectionStart = input.selectionEnd = from + 2;
-        input.dispatchEvent(new Event('input'));
+      editor.addEventListener('keydown', (event) => {
+        const meta = event.ctrlKey || event.metaKey;
+
+        if (meta && event.key.toLowerCase() === 'z') {
+          event.preventDefault();
+          // Typing after an undo starts a fresh step rather than folding into
+          // the one being restored.
+          lastEdit = 0;
+          if (event.shiftKey) {
+            if (!redo.length) return;
+            const entry = redo.pop();
+            undo.push(entry);
+            apply(entry);
+          } else {
+            if (undo.length < 2) return;
+            redo.push(undo.pop());
+            apply(undo[undo.length - 1]);
+          }
+          return;
+        }
+
+        // Tab belongs to the code here, not to focus traversal.
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          const caret = caretOffset();
+          if (caret === null) return;
+          const value = readValue();
+          const next = value.slice(0, caret) + '  ' + value.slice(caret);
+          undo.push({ value: next, caret: caret + 2 });
+          redo.length = 0;
+          lastEdit = 0;
+          apply({ value: next, caret: caret + 2 });
+        }
       });
 
-      editor.append(highlighted, input);
-      wrap.append(gutter, editor);
+      wrap.append(editor);
       body.replaceChildren(wrap);
     }
 
